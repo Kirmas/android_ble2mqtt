@@ -1,4 +1,163 @@
 package com.example.androidbluetoothtomqtt.device
 
-open class BaseDevice {
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothGattService
+import android.util.Log
+import com.example.androidbluetoothtomqtt.ServiceBluetoothToMQTT
+import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperation
+import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperationStack
+import org.eclipse.paho.client.mqttv3.MqttException
+import org.eclipse.paho.client.mqttv3.MqttMessage
+import java.util.UUID
+
+@Suppress("unused") //REVIEW: remove this after implementing Write
+enum class CharacteristicAccessType{
+    Notification,
+    Read,
+    Write
+}
+
+data class AvailableCharacteristicInformation(
+    val serviceUUID: UUID,
+    val characteristicUUID: UUID,
+    val type: CharacteristicAccessType
+)
+
+open class BaseDevice(val connectedBTDevice: BluetoothDevice, private val serviceContext: ServiceBluetoothToMQTT) {
+    private val TAG = "BaseDevice"
+    var availableCharacteristics: ArrayList<AvailableCharacteristicInformation> = arrayListOf()
+
+
+    fun isMacAddressEqual (macAddress: String): Boolean {
+        return connectedBTDevice.address == macAddress
+    }
+
+    open fun created() {
+        connectToDevice(connectedBTDevice)
+    }
+
+    @SuppressLint("MissingPermission")
+    open fun enableCharacteristicNotification(
+        gatt: BluetoothGatt,
+        service: BluetoothGattService,
+        characteristicUUID: UUID) {}
+
+    @SuppressLint("MissingPermission")
+    open fun readCharacteristic(
+        gatt: BluetoothGatt,
+        service: BluetoothGattService,
+        characteristicUUID: UUID
+    ) {
+        val characteristic = service.getCharacteristic(characteristicUUID)
+        characteristic?.let {
+            gatt.readCharacteristic(it)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectToDevice(device: BluetoothDevice) {
+        val gattCallback = object : BluetoothGattCallback() {
+
+            @SuppressLint("MissingPermission")
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothGatt.STATE_CONNECTED) {
+                    Log.d(TAG, "Connected to device: ${device.name}")
+                    gatt.discoverServices()
+                } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
+                    Log.d(TAG, "Disconnected from device: ${device.name}")
+                    // reconnecting
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        gatt.connect()
+                    }
+                }
+            }
+
+
+            private val operationStack = BluetoothOperationStack()
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                val services: List<BluetoothGattService> = gatt.services
+                for (service in services) {
+                    for (availableCharacteristic in availableCharacteristics)
+                    {
+                        if (service.uuid == availableCharacteristic.serviceUUID) {
+                            if(availableCharacteristic.type == CharacteristicAccessType.Notification) {
+                                operationStack.addOperation(BluetoothOperation() { localGatt ->
+                                    enableCharacteristicNotification(localGatt, service, availableCharacteristic.characteristicUUID)
+                                })
+                            }
+                            else if(availableCharacteristic.type == CharacteristicAccessType.Read) {
+                                operationStack.addOperation(BluetoothOperation() { localGatt ->
+                                    readCharacteristic(localGatt, service, availableCharacteristic.characteristicUUID)
+                                })
+                            }
+                        }
+                    }
+                }
+                operationStack.performNextOperation(gatt)
+            }
+
+            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+                operationStack.performNextOperation(gatt)
+            }
+
+            @Suppress("DEPRECATION")
+            @Deprecated("Deprecated in Java")
+            override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+                onCharacteristicRead(characteristic.uuid, characteristic.value)
+                sendData2MQTT()
+
+                operationStack.performNextOperation(gatt)
+            }
+
+            override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value:ByteArray, status: Int) {
+                onCharacteristicRead(characteristic.uuid, value)
+                sendData2MQTT()
+
+                operationStack.performNextOperation(gatt)
+            }
+
+            @Suppress("DEPRECATION")
+            @Deprecated("Deprecated in Java")
+            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                onCharacteristicChanged(characteristic.uuid, characteristic.value)
+                sendData2MQTT()
+            }
+
+            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value:ByteArray) {
+                onCharacteristicChanged(characteristic.uuid, value)
+                sendData2MQTT()
+            }
+
+            private fun sendData2MQTT() {
+                // Відправка даних на MQTT-брокер
+                val message = MqttMessage()
+                message.payload = createPayload()
+                try {
+                    serviceContext.publish(device.address, message)
+                } catch (e: MqttException) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
+        device.connectGatt(serviceContext, false, gattCallback)
+    }
+
+    open fun createPayload() = byteArrayOf()
+
+    open fun onCharacteristicChanged(
+        characteristicUUID: UUID,
+        value: ByteArray
+    ) { }
+
+    open fun onCharacteristicRead(
+        characteristicUUID: UUID,
+        value: ByteArray
+    ) { }
 }
