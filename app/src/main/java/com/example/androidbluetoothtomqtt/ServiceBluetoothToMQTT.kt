@@ -91,7 +91,7 @@ class ServiceBluetoothToMQTT : Service() {
 //        "CGP1W" to com.example.androidbluetooth
 
     private lateinit var mqttServer: String
-    private lateinit var mqttTopic: String
+    lateinit var mqttTopic: String
     private lateinit var mqttUser: String
     private lateinit var mqttPassword: CharArray
 
@@ -272,6 +272,12 @@ class ServiceBluetoothToMQTT : Service() {
     {
         Log.d(TAG, "$mqttTopic/$subTopic $message")
         mqttClient.publish("$mqttTopic/$subTopic", message)
+    }
+
+    fun registerPublish(type: String, subTopic: String, devClass: String, message: MqttMessage)
+    {
+        Log.d(TAG, "homeassistant/$type/$subTopic/$devClass/config $message")
+        mqttClient.publish("homeassistant/$type/$subTopic/$devClass/config", message)
     }
 
     @SuppressLint("MissingPermission")
