@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.example.androidbluetoothtomqtt
 
 import android.annotation.SuppressLint
@@ -7,22 +9,19 @@ import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.bluetooth.BluetoothGattService
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
+import android.content.IntentFilter
 import android.os.IBinder
+import android.os.Parcel
+import android.os.Parcelable
 import android.util.Log
-import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperation
-import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperationStack
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.example.androidbluetoothtomqtt.device.BaseDevice
 import org.eclipse.paho.client.mqttv3.MqttClient
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions
@@ -31,16 +30,39 @@ import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import org.yaml.snakeyaml.Yaml
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.UUID
 import kotlin.math.pow
 
 data class BTDeviceInformation(
     val name: String,
     val address: String,
     val distance: Double
-)
+) : Parcelable {
+    constructor(parcel: Parcel) : this(
+        parcel.readString() ?: "",
+        parcel.readString() ?: "",
+        parcel.readDouble()
+    )
+
+    override fun writeToParcel(parcel: Parcel, flags: Int) {
+        parcel.writeString(name)
+        parcel.writeString(address)
+        parcel.writeDouble(distance)
+    }
+
+    override fun describeContents(): Int {
+        return 0
+    }
+
+    companion object CREATOR : Parcelable.Creator<BTDeviceInformation> {
+        override fun createFromParcel(parcel: Parcel): BTDeviceInformation {
+            return BTDeviceInformation(parcel)
+        }
+
+        override fun newArray(size: Int): Array<BTDeviceInformation?> {
+            return arrayOfNulls(size)
+        }
+    }
+}
 
 class ServiceBluetoothToMQTT : Service() {
 
@@ -76,9 +98,12 @@ class ServiceBluetoothToMQTT : Service() {
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var mqttClient: MqttClient
     private lateinit var bluetoothLeScanner: BluetoothLeScanner
+    private var isSendData: Boolean = false
     var availableBTDevice: ArrayList<BTDeviceInformation> = arrayListOf()
-    private var chosenBTDevice: ArrayList<String> = arrayListOf()
+    private var selectedBTDevice: Map<String, String> = mapOf()
     private var createdDevices: ArrayList<BaseDevice> = arrayListOf()
+    private lateinit var localBroadcastManager: LocalBroadcastManager
+    private lateinit var broadcastReceiver: BroadcastReceiver
 
     override fun onBind(intent: Intent?): IBinder? {
         throw UnsupportedOperationException("Not yet implemented")
@@ -104,6 +129,8 @@ class ServiceBluetoothToMQTT : Service() {
             return
         }
 
+        loadSelectedBTDevice()
+
         val channelId = "BluetoothToMQTTServiceChannel"
         val channelName = "Bluetooth to MQTT Service Channel"
         val channel = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_DEFAULT)
@@ -126,9 +153,41 @@ class ServiceBluetoothToMQTT : Service() {
                 return
             }
 
+        localBroadcastManager = LocalBroadcastManager.getInstance(this)
+        broadcastReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if(intent.hasExtra("SendData")) {
+                    isSendData = intent.getBooleanExtra("SendData", false)
+                    if (isSendData) {
+                        sendAvailableBTDevise()
+                    }
+                }
+                else if (intent.hasExtra("SelectedDevice")){
+                    loadSelectedBTDevice()
+                }
+            }
+        }
+        val intentFilter = IntentFilter("com.example.mainActivity")
+        localBroadcastManager.registerReceiver(broadcastReceiver, intentFilter)
+
         startBluetoothScan()
 
         connectToMqttBroker()
+    }
+
+    private fun loadSelectedBTDevice() {
+        val deviceFile = File(filesDir, "device.yaml")
+        if (deviceFile.exists()) {
+            val yaml = Yaml()
+            val configData = deviceFile.readText()
+            selectedBTDevice = yaml.load<Map<String, String>>(configData)
+        }
+    }
+
+    private fun sendAvailableBTDevise() {
+        val intent = Intent("com.example.bluetoothToMQTT")
+        intent.putExtra("AvailableBTDevice", availableBTDevice)
+        localBroadcastManager.sendBroadcast(intent)
     }
 
     @SuppressLint("MissingPermission")
@@ -152,24 +211,27 @@ class ServiceBluetoothToMQTT : Service() {
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val device: BluetoothDevice = result.device
+            val btDevice: BluetoothDevice = result.device
 
-            if(deviceNameToClass.containsKey(device.name)) {
-                if (!availableBTDevice.any { it.address == device.address }){
-                    Log.d(TAG, "Found device: ${device.name} ${device.address} ${calculateDistance(result.rssi)} ")
-                    availableBTDevice.add(BTDeviceInformation(device.name, device.address, calculateDistance(result.rssi)))
+            if(deviceNameToClass.containsKey(btDevice.name)) {
+                if (!availableBTDevice.any { it.address == btDevice.address }){
+                    Log.d(TAG, "Found device: ${btDevice.name} ${btDevice.address} ${calculateDistance(result.rssi)} ")
+                    availableBTDevice.add(BTDeviceInformation(btDevice.name, btDevice.address, calculateDistance(result.rssi)))
+                    if (isSendData) {
+                        sendAvailableBTDevise()
+                    }
                 }
 
-//                if(chosenMac.contains(device.address) && !createdDevices.equals(device.address)) {
-//                    //create new device using class from map and add it to createdDevices
-//                    deviceNameToClass[device.name]?.let { deviceClass ->
-//                        val deviceInstance = deviceClass.getConstructor(BluetoothDevice::class.java).newInstance(device) as BaseDevice
-//                        createdDevices.add(deviceInstance)
-//                        //connectToDevice(device)
-//                    }
-//
-//
-//                }
+                if(selectedBTDevice.containsKey(btDevice.address) && !createdDevices.any{ device ->
+                        device.isMacAddressEqual(btDevice.address)
+                    }) {
+                    //create new device using class from map and add it to createdDevices
+                    deviceNameToClass[btDevice.name]?.let { deviceClass ->
+                        val deviceInstance = deviceClass.getConstructor(BluetoothDevice::class.java, ServiceBluetoothToMQTT::class.java).newInstance(btDevice, this@ServiceBluetoothToMQTT) as BaseDevice
+                        createdDevices.add(deviceInstance)
+                        deviceInstance.created()
+                    }
+                }
             }
         }
 
@@ -190,169 +252,6 @@ class ServiceBluetoothToMQTT : Service() {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun connectToDevice(device: BluetoothDevice) {
-        val gattCallback = object : BluetoothGattCallback() {
-            @SuppressLint("MissingPermission")
-            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothGatt.STATE_CONNECTED) {
-                    Log.d(TAG, "Connected to device: ${device.name}")
-                    gatt.discoverServices()
-                } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
-                    Log.d(TAG, "Disconnected from device: ${device.name}")
-                    // reconnecting
-                    if (status != BluetoothGatt.GATT_SUCCESS) {
-                        gatt.connect()
-                    }
-                }
-            }
-
-            @SuppressLint("MissingPermission")
-            private fun enableCharacteristicNotification(
-                gatt: BluetoothGatt,
-                service: BluetoothGattService,
-                characteristicUUID: UUID
-            ) {
-                val characteristic = service.getCharacteristic(characteristicUUID)
-                characteristic?.let {
-                    val descriptor =
-                        it.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                    if (descriptor != null) {
-                        gatt.setCharacteristicNotification(it, true)
-                        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            gatt.writeDescriptor(
-                                descriptor,
-                                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                            )
-                        }
-                        else
-                        {
-                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                            gatt.writeDescriptor(descriptor)
-                        }
-                    }
-                }
-            }
-
-            @SuppressLint("MissingPermission")
-            private fun readCharacteristic(
-                gatt: BluetoothGatt,
-                service: BluetoothGattService,
-                characteristicUUID: UUID
-            ) {
-                val characteristic = service.getCharacteristic(characteristicUUID)
-                characteristic?.let {
-                    gatt.readCharacteristic(it)
-                }
-            }
-
-            private val operationStack = BluetoothOperationStack()
-
-            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                val services: List<BluetoothGattService> = gatt.services
-                for (service in services) {
-                    if (service.uuid == UUID.fromString("ebe0ccb0-7a0a-4b0c-8a1a-6ff2997da3a6")) {
-                        operationStack.addOperation(BluetoothOperation() { localGatt ->
-                            enableCharacteristicNotification(localGatt, service, UUID.fromString("ebe0ccc1-7a0a-4b0c-8a1a-6ff2997da3a6"))
-                        })
-                        operationStack.addOperation(BluetoothOperation() { localGatt ->
-                            readCharacteristic(localGatt, service, UUID.fromString("ebe0ccc4-7a0a-4b0c-8a1a-6ff2997da3a6"))
-                        })
-
-                        break
-                    }
-                }
-                operationStack.performNextOperation(gatt)
-            }
-
-            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-                operationStack.performNextOperation(gatt)
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-                if (characteristic.uuid == UUID.fromString("ebe0ccc4-7a0a-4b0c-8a1a-6ff2997da3a6")) {
-                    val value = characteristic.value
-                    val battery = value[0].toInt()
-                    Log.d(TAG, "Battery: $battery")
-
-                    // Відправка даних на MQTT-брокер
-                    val message = MqttMessage()
-                    message.payload = "$battery%".toByteArray()
-                    try {
-                        mqttClient.publish("$mqttTopic/test", message)
-                    } catch (e: MqttException) {
-                        e.printStackTrace()
-                    }
-                }
-
-                operationStack.performNextOperation(gatt)
-            }
-
-            override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value:ByteArray, status: Int) {
-                if (characteristic.uuid == UUID.fromString("ebe0ccc4-7a0a-4b0c-8a1a-6ff2997da3a6")) {
-                    val battery = value[0].toInt()
-                    Log.d(TAG, "Battery: $battery")
-
-                    // Відправка даних на MQTT-брокер
-                    val message = MqttMessage()
-                    message.payload = "$battery%".toByteArray()
-                    try {
-                        mqttClient.publish("$mqttTopic/test", message)
-                    } catch (e: MqttException) {
-                        e.printStackTrace()
-                    }
-                }
-
-                operationStack.performNextOperation(gatt)
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-                if (characteristic.uuid == UUID.fromString("ebe0ccc1-7a0a-4b0c-8a1a-6ff2997da3a6")) {
-                    val value = characteristic.value
-                    val humidity = value[2].toInt()
-                    val temperatureBytes = value.copyOfRange(0, 2)
-                    val temperature =
-                        ByteBuffer.wrap(temperatureBytes).order(ByteOrder.LITTLE_ENDIAN).short / 100.0f
-
-                    Log.d(TAG, "Temperature: $temperature, Humidity: $humidity")
-
-                    // Відправка даних на MQTT-брокер
-                    val message = MqttMessage()
-                    message.payload = "$temperature°C, $humidity%".toByteArray()
-                    try {
-                        mqttClient.publish("$mqttTopic/test", message)
-                    } catch (e: MqttException) {
-                        Log.e(TAG, "Failed to publish MQTT message: ${e.message}")
-                    }
-                }
-            }
-
-            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value:ByteArray) {
-                if (characteristic.uuid == UUID.fromString("ebe0ccc1-7a0a-4b0c-8a1a-6ff2997da3a6")) {
-                    val humidity = value[2].toInt()
-                    val temperatureBytes = value.copyOfRange(0, 2)
-                    val temperature =
-                        ByteBuffer.wrap(temperatureBytes).order(ByteOrder.LITTLE_ENDIAN).short / 100.0f
-
-                    Log.d(TAG, "Temperature: $temperature, Humidity: $humidity")
-
-                    // Відправка даних на MQTT-брокер
-                    val message = MqttMessage()
-                    message.payload = "$temperature°C, $humidity%".toByteArray()
-                    try {
-                        mqttClient.publish("$mqttTopic/test", message)
-                    } catch (e: MqttException) {
-                        Log.e(TAG, "Failed to publish MQTT message: ${e.message}")
-                    }
-                }
-            }
-        }
-
-        device.connectGatt(this, false, gattCallback)
-    }
-
     private fun connectToMqttBroker() {
         val clientId = MqttClient.generateClientId()
         mqttClient = MqttClient(mqttServer, clientId, MemoryPersistence())
@@ -369,9 +268,17 @@ class ServiceBluetoothToMQTT : Service() {
         }
     }
 
+    fun publish(subTopic: String, message: MqttMessage)
+    {
+        Log.d(TAG, "$mqttTopic/$subTopic $message")
+        mqttClient.publish("$mqttTopic/$subTopic", message)
+    }
+
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         super.onDestroy()
+
+        localBroadcastManager.unregisterReceiver(broadcastReceiver)
 
         bluetoothLeScanner.stopScan(scanCallback)
         if (mqttClient.isConnected) {

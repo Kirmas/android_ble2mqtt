@@ -1,6 +1,8 @@
+@file:Suppress("DEPRECATION")
 package com.example.androidbluetoothtomqtt
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
@@ -17,11 +19,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,14 +45,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.example.androidbluetoothtomqtt.ui.theme.AndroidBluetoothToMqttTheme
 import com.vmadalin.easypermissions.EasyPermissions
 import com.vmadalin.easypermissions.annotations.AfterPermissionGranted
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.Yaml
 import java.io.File
 
+@SuppressLint("MutableCollectionMutableState")
 class MainActivity : ComponentActivity() {
     enum class MenuItems {
         Settings,
@@ -57,12 +67,15 @@ class MainActivity : ComponentActivity() {
 
     private val TAG = "MainActivity"
     private val CONFIG_FILE_NAME = "config.yaml"
+    private val DEVICE_FILE_NAME = "device.yaml"
     private var bConfigLoaded: Boolean = false
     private var mqttServer by mutableStateOf<String>("tcp://localhost:1883")
     private var mqttTopic by mutableStateOf<String>("bluetooth2mqtt")
     private var mqttUser by mutableStateOf<String>("")
     private var mqttPassword by mutableStateOf<CharArray>(CharArray(0) { ' ' })
     private var selectedMenu by mutableStateOf<MenuItems>(MenuItems.Devices)
+    private var availableBTDevice by mutableStateOf<ArrayList<BTDeviceInformation>>(arrayListOf())
+    private var selectedBTDevice by mutableStateOf<MutableMap<String, String>>(mutableMapOf())
     private lateinit var localBroadcastManager: LocalBroadcastManager
     private lateinit var broadcastReceiver: BroadcastReceiver
 
@@ -103,9 +116,10 @@ class MainActivity : ComponentActivity() {
 
         localBroadcastManager = LocalBroadcastManager.getInstance(this)
         broadcastReceiver = object : BroadcastReceiver() {
-                override fun onReceive(context: Context, intent: Intent) {
-                val data = intent.getStringExtra("data")
-                Log.d(TAG, "Received data: $data")
+            override fun onReceive(context: Context, intent: Intent) {
+                if(intent.hasExtra("AvailableBTDevice")) {
+                    availableBTDevice = intent.getParcelableArrayListExtra("AvailableBTDevice")!!
+                }
             }
         }
 
@@ -114,7 +128,7 @@ class MainActivity : ComponentActivity() {
             Log.e(TAG, "Bluetooth is not supported on this device")
             return
         }
-
+        loadDeviceFromYaml()
         checkAndRequestPermissions()
     }
 
@@ -147,25 +161,32 @@ class MainActivity : ComponentActivity() {
         if(!isServiceRunning(ServiceBluetoothToMQTT::class.java)) {
             startService(Intent(this, ServiceBluetoothToMQTT::class.java))
             if(selectedMenu == MenuItems.Devices) {
-                startDataReceiver()
+                CoroutineScope(Dispatchers.Main).launch {
+                    delay(1000)
+                    startDataReceiver()
+                }
             }
         } else {
             Log.i(TAG, "Service already running")
         }
     }
 
-    private fun startDataReceiver() {
-        val intentFilter = IntentFilter("com.example.bluetoothToMQTT")
-        localBroadcastManager.registerReceiver(broadcastReceiver, intentFilter)
+    private fun sendDataToService(name: String, value: Boolean) {
         val intent = Intent("com.example.mainActivity")
-        intent.putExtra("SendData", true)
+        intent.putExtra(name, value)
         localBroadcastManager.sendBroadcast(intent)
     }
 
+    private fun startDataReceiver() {
+        val intentFilter = IntentFilter("com.example.bluetoothToMQTT")
+        localBroadcastManager.registerReceiver(broadcastReceiver, intentFilter)
+        sendDataToService("SendData", true)
+    }
+
+
+
     private fun stopDataReceiver() {
-        val intent = Intent("com.example.mainActivity")
-        intent.putExtra("SendData", false)
-        localBroadcastManager.sendBroadcast(intent)
+        sendDataToService("SendData", false)
         localBroadcastManager.unregisterReceiver(broadcastReceiver)
     }
 
@@ -229,6 +250,28 @@ class MainActivity : ComponentActivity() {
         configFile.writeText(yaml.dump(configData))
         bConfigLoaded = true
         Log.i(TAG, "Config saved")
+    }
+
+    private fun loadDeviceFromYaml() {
+        val deviceFile = File(filesDir, DEVICE_FILE_NAME)
+        if (deviceFile.exists()) {
+            val yaml = Yaml()
+            val configData = deviceFile.readText()
+            selectedBTDevice = yaml.load<MutableMap<String, String>>(configData)
+            Log.i(TAG, "Device file loaded")
+        } else {
+            Log.i(TAG, "Device file not exists")
+        }
+    }
+
+    private fun saveDeviceToYaml() {
+        val dumperOptions = DumperOptions()
+        dumperOptions.defaultFlowStyle = DumperOptions.FlowStyle.BLOCK
+        dumperOptions.isPrettyFlow = true
+        val yaml = Yaml(dumperOptions)
+        val configFile = File(filesDir, DEVICE_FILE_NAME)
+        configFile.writeText(yaml.dump(selectedBTDevice))
+        Log.i(TAG, "Device file saved")
     }
 
     @Composable
@@ -321,7 +364,38 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun ShowDevices() {
-        // Відображення контенту для пункту "Устройства"
+
+        Column {
+            availableBTDevice.forEach { device ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Checkbox(
+                        checked = selectedBTDevice.containsKey(device.address),
+                        onCheckedChange = { isChecked ->
+                            if (isChecked) {
+                                selectedBTDevice[device.address] = device.name
+                                saveDeviceToYaml()
+                            } else {
+                                selectedBTDevice.remove(device.address)
+                                saveDeviceToYaml()
+                            }
+                            sendDataToService("SelectedDevice", true)}
+                    )
+                    Column(
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .weight(1f)
+                    ) {
+                        Text(text = device.name)
+                        Text(text = device.address)
+                        Text(text = "Distance: ${device.distance}")
+                    }
+                }
+            }
+        }
     }
 
 
@@ -341,7 +415,7 @@ class MainActivity : ComponentActivity() {
             stopDataReceiver()
         }
         else if (menuItem == MenuItems.Devices) {
-            startBluetoothToMQTTService()
+            startDataReceiver()
         }
 
         selectedMenu = menuItem
