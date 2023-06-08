@@ -13,6 +13,8 @@ import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperation
 import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperationStack
 import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 @Suppress("unused") //REVIEW: remove this after implementing Write
@@ -28,16 +30,39 @@ data class AvailableCharacteristicInformation(
     val type: CharacteristicAccessType
 )
 
-open class BaseDevice(val connectedBTDevice: BluetoothDevice, private val serviceContext: ServiceBluetoothToMQTT) {
+data class SubDevice(
+    val deviceType: String,
+    val deviceClass: String,
+    val enabledByDefault: Boolean,
+    val entityCategory: String,
+    val stateClass: String,
+    val unitOfMeasurement: String,
+)
+
+open class BaseDevice(private val connectedBTDevice: BluetoothDevice, private val serviceContext: ServiceBluetoothToMQTT) {
     private val TAG = "BaseDevice"
     var availableCharacteristics: ArrayList<AvailableCharacteristicInformation> = arrayListOf()
-
+    var manufacturer: String = ""
+    var subDevices: ArrayList<SubDevice> = arrayListOf()
+    var deviceName: String = ""
 
     fun isMacAddressEqual (macAddress: String): Boolean {
         return connectedBTDevice.address == macAddress
     }
 
     open fun created() {
+        deviceName = connectedBTDevice.address.replace(":", "").lowercase()
+
+        for (subDevice in subDevices) {
+            val message = MqttMessage()
+            message.qos = 0
+            message.payload = createInitialPayloadForSubDevice(subDevice)
+            try {
+                serviceContext.registerPublish(subDevice.deviceType, deviceName, subDevice.deviceClass, message)
+            } catch (e: MqttException) {
+                e.printStackTrace()
+            }
+        }
         connectToDevice(connectedBTDevice)
     }
 
@@ -137,9 +162,10 @@ open class BaseDevice(val connectedBTDevice: BluetoothDevice, private val servic
             private fun sendData2MQTT() {
                 // Відправка даних на MQTT-брокер
                 val message = MqttMessage()
+                message.qos = 0
                 message.payload = createPayload()
                 try {
-                    serviceContext.publish(device.address, message)
+                    serviceContext.publish(deviceName, message)
                 } catch (e: MqttException) {
                     e.printStackTrace()
                 }
@@ -147,6 +173,37 @@ open class BaseDevice(val connectedBTDevice: BluetoothDevice, private val servic
         }
 
         device.connectGatt(serviceContext, false, gattCallback)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun createInitialPayloadForSubDevice(subDevice: SubDevice): ByteArray {
+        val jsonObject = JSONObject()
+        val deviceObject = JSONObject()
+        val identifiersArray = JSONArray()
+
+        identifiersArray.put("${serviceContext.mqttTopic}_${deviceName}")
+
+        deviceObject.put("identifiers", identifiersArray)
+        deviceObject.put("manufacturer", manufacturer)
+        deviceObject.put("model", connectedBTDevice.name)
+        deviceObject.put("name", deviceName)
+
+        jsonObject.put("device", deviceObject)
+        jsonObject.put("device_class", subDevice.deviceClass)
+        jsonObject.put("enabled_by_default", subDevice.enabledByDefault)
+        if(subDevice.entityCategory.isNotEmpty()) {
+            jsonObject.put("entity_category", subDevice.entityCategory)
+        }
+        jsonObject.put("json_attributes_topic", "${serviceContext.mqttTopic}/${deviceName}")
+        jsonObject.put("name", "$deviceName ${subDevice.deviceClass}")
+        jsonObject.put("state_class", subDevice.stateClass)
+        jsonObject.put("state_topic", "${serviceContext.mqttTopic}/${deviceName}")
+        jsonObject.put("unique_id", "${deviceName}_${subDevice.deviceClass}_${serviceContext.mqttTopic}")
+        jsonObject.put("unit_of_measurement", subDevice.unitOfMeasurement)
+        jsonObject.put("value_template", "{{ value_json.${subDevice.deviceClass} }}")
+        jsonObject.put("platform", "mqtt")
+
+        return jsonObject.toString().toByteArray()
     }
 
     open fun createPayload() = byteArrayOf()

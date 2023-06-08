@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattService
 import android.os.Build
 import android.util.Log
 import com.example.androidbluetoothtomqtt.ServiceBluetoothToMQTT
+import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
@@ -25,6 +26,10 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
     override fun created() {
         availableCharacteristics.add(AvailableCharacteristicInformation(SERVICE, UUID_DATA, CharacteristicAccessType.Notification))
         availableCharacteristics.add(AvailableCharacteristicInformation(SERVICE, UUID_BATTERY, CharacteristicAccessType.Read))
+        subDevices.add(SubDevice("sensor","temperature", true, "", "measurement", "°C"))
+        subDevices.add(SubDevice("sensor","humidity", true, "", "measurement", "%"))
+        subDevices.add(SubDevice("sensor","battery", true, "diagnostic", "measurement", "%"))
+
         super.created()
     }
     @Suppress("DEPRECATION")
@@ -57,8 +62,12 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
     }
     @SuppressLint("MissingPermission")
     override fun createPayload(): ByteArray {
-        val payload = "{\"name\": \"${connectedBTDevice.name}\", \"temperature\": $temperature, \"humidity\": $humidity, \"battery\": $battery }"
-        return payload.toByteArray()
+        val jsonObject = JSONObject()
+        jsonObject.put("temperature", temperature)
+        jsonObject.put("humidity", humidity)
+        jsonObject.put("battery", battery)
+
+        return jsonObject.toString().toByteArray()
     }
 
     override fun onCharacteristicChanged(
