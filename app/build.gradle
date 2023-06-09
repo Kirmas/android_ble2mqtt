@@ -55,6 +55,7 @@ dependencies {
     implementation 'com.vmadalin:easypermissions-ktx:1.0.0'
     implementation 'org.yaml:snakeyaml:1.29'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+    implementation 'com.google.guava:guava:32.0.1-jre'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'

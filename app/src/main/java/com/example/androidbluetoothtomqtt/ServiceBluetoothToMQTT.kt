@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
@@ -19,10 +20,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.IBinder
 import android.os.Parcel
+import android.os.ParcelUuid
 import android.os.Parcelable
 import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.example.androidbluetoothtomqtt.device.BaseDevice
+import com.example.androidbluetoothtomqtt.device.LYWSD02Device
 import org.eclipse.paho.client.mqttv3.MqttClient
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttException
@@ -30,7 +33,9 @@ import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import org.yaml.snakeyaml.Yaml
 import java.io.File
+import java.util.UUID
 import kotlin.math.pow
+
 
 data class BTDeviceInformation(
     val name: String,
@@ -67,8 +72,8 @@ data class BTDeviceInformation(
 class ServiceBluetoothToMQTT : Service() {
 
     private val TAG = "ServiceBluetooth"
-    private val deviceNameToClass: Map<String, Class<out BaseDevice>> = mapOf(
-        "LYWSD02" to com.example.androidbluetoothtomqtt.device.LYWSD02Device::class.java
+    private val deviceNameToClass: Map<String, Pair<Class<LYWSD02Device>, UUID>> = mapOf(
+        "LYWSD02" to Pair(LYWSD02Device::class.java, UUID.fromString("0000fe95-0000-1000-8000-00805f9b34fb"))
     )
 //        "LYWSD03MMC" to com.example.androidbluetoothtomqtt.device.LYWSD03MMCDevice::class.java,
 //        "LYWSDCGQ" to com.example.androidbluetoothtomqtt.device.LYWSDCGQDevice::class.java,
@@ -194,11 +199,19 @@ class ServiceBluetoothToMQTT : Service() {
     private fun startBluetoothScan() {
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
 
+        val scanFilters = arrayListOf<ScanFilter>()
+        for (deviceName in deviceNameToClass.keys) {
+            val scanFilter = ScanFilter.Builder()
+                .setDeviceName(deviceName)
+                .build()
+            scanFilters.add(scanFilter)
+        }
+
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
             .build()
 
-        bluetoothLeScanner.startScan(listOf(), scanSettings, scanCallback)
+        bluetoothLeScanner.startScan(scanFilters, scanSettings, scanCallback)
     }
 
     override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
@@ -222,14 +235,30 @@ class ServiceBluetoothToMQTT : Service() {
                     }
                 }
 
-                if(selectedBTDevice.containsKey(btDevice.address) && !createdDevices.any{ device ->
+                if(selectedBTDevice.containsKey(btDevice.address)) {
+                    val createdDevice = createdDevices.find { device ->
                         device.isMacAddressEqual(btDevice.address)
-                    }) {
-                    //create new device using class from map and add it to createdDevices
-                    deviceNameToClass[btDevice.name]?.let { deviceClass ->
-                        val deviceInstance = deviceClass.getConstructor(BluetoothDevice::class.java, ServiceBluetoothToMQTT::class.java).newInstance(btDevice, this@ServiceBluetoothToMQTT) as BaseDevice
-                        createdDevices.add(deviceInstance)
-                        deviceInstance.created()
+                    }
+                    deviceNameToClass[btDevice.name]?.let { deviceClassPair ->
+                        val deviceClass = deviceClassPair.first
+                        val serviceUuid = deviceClassPair.second
+                        if(createdDevice == null) {
+                            val deviceInstance = deviceClass.getConstructor(
+                                BluetoothDevice::class.java,
+                                ServiceBluetoothToMQTT::class.java
+                            ).newInstance(btDevice, this@ServiceBluetoothToMQTT) as BaseDevice
+                            val serviceData = result.scanRecord?.getServiceData(ParcelUuid(serviceUuid))
+                            createdDevices.add(deviceInstance)
+                            deviceInstance.created()
+                            if (serviceData != null) {
+                                deviceInstance.newPassiveBLEData(serviceData)
+                            }
+                        } else {
+                            val serviceData = result.scanRecord?.getServiceData(ParcelUuid(serviceUuid))
+                            if (serviceData != null) {
+                                createdDevice.newPassiveBLEData(serviceData)
+                            }
+                        }
                     }
                 }
             }
