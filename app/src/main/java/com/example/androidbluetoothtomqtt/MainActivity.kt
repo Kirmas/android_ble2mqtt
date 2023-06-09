@@ -212,10 +212,6 @@ class MainActivity : ComponentActivity() {
         if (selectedMenu == MenuItems.Devices) {
             stopDataReceiver()
         }
-
-        if (isServiceRunning(ServiceBluetoothToMQTT::class.java)) {
-            stopService(Intent(this, ServiceBluetoothToMQTT::class.java))
-        }
     }
 
     private fun loadConfigFromYaml() {
