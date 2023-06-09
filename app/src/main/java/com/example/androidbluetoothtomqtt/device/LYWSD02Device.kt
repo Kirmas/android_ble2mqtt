@@ -32,6 +32,7 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
 
         super.created()
     }
+
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
     override fun enableCharacteristicNotification(
@@ -60,6 +61,43 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
             }
         }
     }
+
+    override fun newSensorData(data: Map<String, Any>){
+        var bSendToMQTT = false
+
+        if(data.containsKey("temperature")){
+            val newTemperature = data["temperature"] as Float
+            if(newTemperature != temperature) {
+                temperature = newTemperature
+                bSendToMQTT = true
+
+                Log.d(TAG, "Temperature: $temperature")
+            }
+        }
+        if(data.containsKey("humidity")){
+            val newHumidity = data["humidity"] as Int
+            if(newHumidity != humidity) {
+                humidity = newHumidity
+                bSendToMQTT = true
+
+                Log.d(TAG, "Humidity: $humidity")
+            }
+        }
+        if(data.containsKey("battery")){
+            val newBattery = data["battery"] as Int
+            if(newBattery != battery) {
+                battery = newBattery
+                bSendToMQTT = true
+
+                Log.d(TAG, "Battery: $battery")
+            }
+        }
+
+        if(bSendToMQTT) {
+            sendData2MQTT()
+        }
+    }
+
     @SuppressLint("MissingPermission")
     override fun createPayload(): ByteArray {
         val jsonObject = JSONObject()
@@ -75,12 +113,18 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
         value: ByteArray
     ) {
         if (characteristicUUID == UUID_DATA) {
-            humidity = value[2].toInt()
+            val newHumidity = value[2].toInt()
             val temperatureBytes = value.copyOfRange(0, 2)
-            temperature =
+            val newTemperature =
                 ByteBuffer.wrap(temperatureBytes).order(ByteOrder.LITTLE_ENDIAN).short / 100.0f
 
-            Log.d(TAG, "Temperature: $temperature, Humidity: $humidity")
+            if(newHumidity != humidity || newTemperature != temperature) {
+                humidity = newHumidity
+                temperature = newTemperature
+                sendData2MQTT()
+
+                Log.d(TAG, "Temperature: $temperature, Humidity: $humidity")
+            }
         }
     }
 
@@ -89,8 +133,13 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
         value: ByteArray
     ) {
         if (characteristicUUID == UUID_BATTERY) {
-            battery = value[0].toInt()
-            Log.d(TAG, "Battery: $battery")
+            val newBattery = value[0].toInt()
+            if(newBattery != battery) {
+                battery = newBattery
+                sendData2MQTT()
+
+                Log.d(TAG, "Battery: $battery")
+            }
         }
     }
 }

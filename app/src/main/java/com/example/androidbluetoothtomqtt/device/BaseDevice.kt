@@ -39,12 +39,13 @@ data class SubDevice(
     val unitOfMeasurement: String,
 )
 
-open class BaseDevice(private val connectedBTDevice: BluetoothDevice, private val serviceContext: ServiceBluetoothToMQTT) {
+abstract class BaseDevice(private val connectedBTDevice: BluetoothDevice, private val serviceContext: ServiceBluetoothToMQTT) {
     private val TAG = "BaseDevice"
     var availableCharacteristics: ArrayList<AvailableCharacteristicInformation> = arrayListOf()
     var manufacturer: String = ""
     var subDevices: ArrayList<SubDevice> = arrayListOf()
     var deviceName: String = ""
+    var bAutoConnect: Boolean = false
 
     fun isMacAddressEqual (macAddress: String): Boolean {
         return connectedBTDevice.address == macAddress
@@ -63,14 +64,16 @@ open class BaseDevice(private val connectedBTDevice: BluetoothDevice, private va
                 e.printStackTrace()
             }
         }
-        connectToDevice(connectedBTDevice)
+        if(bAutoConnect) connectToDevice(connectedBTDevice)
     }
 
-    @SuppressLint("MissingPermission")
-    open fun enableCharacteristicNotification(
+    abstract fun newPassiveBLEData(newData: ByteArray)
+
+
+    abstract fun enableCharacteristicNotification(
         gatt: BluetoothGatt,
         service: BluetoothGattService,
-        characteristicUUID: UUID) {}
+        characteristicUUID: UUID)
 
     @SuppressLint("MissingPermission")
     open fun readCharacteristic(
@@ -135,14 +138,12 @@ open class BaseDevice(private val connectedBTDevice: BluetoothDevice, private va
             @Deprecated("Deprecated in Java")
             override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
                 onCharacteristicRead(characteristic.uuid, characteristic.value)
-                sendData2MQTT()
 
                 operationStack.performNextOperation(gatt)
             }
 
             override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value:ByteArray, status: Int) {
                 onCharacteristicRead(characteristic.uuid, value)
-                sendData2MQTT()
 
                 operationStack.performNextOperation(gatt)
             }
@@ -151,28 +152,26 @@ open class BaseDevice(private val connectedBTDevice: BluetoothDevice, private va
             @Deprecated("Deprecated in Java")
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 onCharacteristicChanged(characteristic.uuid, characteristic.value)
-                sendData2MQTT()
             }
 
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value:ByteArray) {
                 onCharacteristicChanged(characteristic.uuid, value)
-                sendData2MQTT()
-            }
-
-            private fun sendData2MQTT() {
-                // Відправка даних на MQTT-брокер
-                val message = MqttMessage()
-                message.qos = 0
-                message.payload = createPayload()
-                try {
-                    serviceContext.publish(deviceName, message)
-                } catch (e: MqttException) {
-                    e.printStackTrace()
-                }
             }
         }
 
         device.connectGatt(serviceContext, false, gattCallback)
+    }
+
+    protected fun sendData2MQTT() {
+        // Відправка даних на MQTT-брокер
+        val message = MqttMessage()
+        message.qos = 0
+        message.payload = createPayload()
+        try {
+            serviceContext.publish(deviceName, message)
+        } catch (e: MqttException) {
+            e.printStackTrace()
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -208,13 +207,13 @@ open class BaseDevice(private val connectedBTDevice: BluetoothDevice, private va
 
     open fun createPayload() = byteArrayOf()
 
-    open fun onCharacteristicChanged(
+    abstract fun onCharacteristicChanged(
         characteristicUUID: UUID,
         value: ByteArray
-    ) { }
+    )
 
-    open fun onCharacteristicRead(
+    abstract fun onCharacteristicRead(
         characteristicUUID: UUID,
         value: ByteArray
-    ) { }
+    )
 }
