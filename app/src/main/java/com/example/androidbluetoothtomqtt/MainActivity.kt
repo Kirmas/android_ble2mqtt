@@ -158,8 +158,8 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if(!isServiceRunning(ServiceBluetoothToMQTT::class.java)) {
-            startService(Intent(this, ServiceBluetoothToMQTT::class.java))
+        if(!isServiceRunning()) {
+            startForegroundService(Intent(this, ServiceBluetoothToMQTT::class.java))
             if(selectedMenu == MenuItems.Devices) {
                 CoroutineScope(Dispatchers.Main).launch {
                     delay(1000)
@@ -195,15 +195,10 @@ class MainActivity : ComponentActivity() {
         startBluetoothToMQTTService()
     }
 
-    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
-        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-
-        for (service in activityManager.getRunningServices(Integer.MAX_VALUE)) {
-            if (serviceClass.name == service.service.className) {
-                return true
-            }
-        }
-        return false
+    private fun isServiceRunning(): Boolean {
+        val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val services = manager.getRunningServices(Integer.MAX_VALUE)
+        return services.any { it.service.className == ServiceBluetoothToMQTT::class.java.name }
     }
 
     override fun onDestroy() {
