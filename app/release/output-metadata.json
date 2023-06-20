@@ -11,9 +11,9 @@
       "type": "SINGLE",
       "filters": [],
       "attributes": [],
-      "versionCode": 2,
-      "versionName": "1.0.1",
-      "outputFile": "android_ble2mqtt_1.0.1.apk"
+      "versionCode": 3,
+      "versionName": "2023.6.0",
+      "outputFile": "android_ble2mqtt_2023.6.0.apk"
     }
   ],
   "elementType": "File"
