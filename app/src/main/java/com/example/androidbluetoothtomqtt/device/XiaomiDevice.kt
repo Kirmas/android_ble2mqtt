@@ -17,6 +17,9 @@ enum class EventTypes(val value: Int){
 }
 
 abstract class XiaomiDevice(connectedBTDevice: BluetoothDevice, serviceContext: ServiceBluetoothToMQTT) : BaseDevice(connectedBTDevice, serviceContext) {
+    override val manufacturer: String
+        get() = "Xiaomi"
+
     private val TAG = "XiaomiDevice"
     private val baseByteLength = 5
     private val frameControlFlags = mapOf(
@@ -37,11 +40,6 @@ abstract class XiaomiDevice(connectedBTDevice: BluetoothDevice, serviceContext: 
         "secure" to (1 shl 2),
         "io" to ((1 shl 3) or (1 shl 4))
     )
-
-    override fun created() {
-        manufacturer = "Xiaomi"
-        super.created()
-    }
 
     final override fun newPassiveBLEData(newData: ByteArray)
     {

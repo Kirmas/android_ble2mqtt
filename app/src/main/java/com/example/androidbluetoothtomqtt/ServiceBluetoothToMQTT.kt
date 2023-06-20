@@ -18,6 +18,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
 import android.os.IBinder
 import android.os.Parcel
 import android.os.ParcelUuid
@@ -26,6 +27,8 @@ import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.example.androidbluetoothtomqtt.device.BaseDevice
 import com.example.androidbluetoothtomqtt.device.LYWSD02Device
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
+import org.eclipse.paho.client.mqttv3.MqttCallbackExtended
 import org.eclipse.paho.client.mqttv3.MqttClient
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttException
@@ -69,7 +72,8 @@ data class BTDeviceInformation(
     }
 }
 
-class ServiceBluetoothToMQTT : Service() {
+
+class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
 
     private val TAG = "ServiceBluetooth"
     private val deviceNameToClass: Map<String, Pair<Class<LYWSD02Device>, UUID>> = mapOf(
@@ -94,6 +98,8 @@ class ServiceBluetoothToMQTT : Service() {
 //        "CGD1" to com.example.androidbluetoothtomqtt.device.CGD1Device::class.java,
 //        "CGG1" to com.example.androidbluetoothtomqtt.device.CGG1Device::class.java,
 //        "CGP1W" to com.example.androidbluetooth
+    private val defaultStatusTopic = "homeassistant/status"
+    private val statusTopic = "hass/status"
 
     private lateinit var mqttServer: String
     lateinit var mqttTopic: String
@@ -109,6 +115,8 @@ class ServiceBluetoothToMQTT : Service() {
     private var createdDevices: ArrayList<BaseDevice> = arrayListOf()
     private lateinit var localBroadcastManager: LocalBroadcastManager
     private lateinit var broadcastReceiver: BroadcastReceiver
+    private val scanHandler = Handler()
+    private var isScanning: Boolean = false
 
     override fun onBind(intent: Intent?): IBinder? {
         throw UnsupportedOperationException("Not yet implemented")
@@ -175,7 +183,7 @@ class ServiceBluetoothToMQTT : Service() {
         val intentFilter = IntentFilter("com.example.mainActivity")
         localBroadcastManager.registerReceiver(broadcastReceiver, intentFilter)
 
-        startBluetoothScan()
+        startScan()
 
         connectToMqttBroker()
     }
@@ -196,6 +204,22 @@ class ServiceBluetoothToMQTT : Service() {
     }
 
     @SuppressLint("MissingPermission")
+    private fun stopBluetoothScan() {
+        if (isScanning) {
+            Log.d(TAG,"Bluetooth Scan Stoped.")
+            bluetoothLeScanner.stopScan(scanCallback)
+            isScanning = false
+        }
+    }
+
+    private fun startScan() {
+        stopBluetoothScan()
+        startBluetoothScan()
+
+        scanHandler.postDelayed({ startScan() }, 10 * 60 * 1000)
+    }
+
+    @SuppressLint("MissingPermission")
     private fun startBluetoothScan() {
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
 
@@ -212,6 +236,9 @@ class ServiceBluetoothToMQTT : Service() {
             .build()
 
         bluetoothLeScanner.startScan(scanFilters, scanSettings, scanCallback)
+
+        Log.d(TAG,"Bluetooth Scan Started.")
+        isScanning = true
     }
 
     override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
@@ -284,14 +311,20 @@ class ServiceBluetoothToMQTT : Service() {
     private fun connectToMqttBroker() {
         val clientId = MqttClient.generateClientId()
         mqttClient = MqttClient(mqttServer, clientId, MemoryPersistence())
+        mqttClient.setCallback(this)
 
         val options = MqttConnectOptions()
         options.userName = mqttUser
         options.password = mqttPassword
+        options.isAutomaticReconnect = true
 
         try {
             mqttClient.connect(options)
             Log.d(TAG, "Connected to MQTT broker")
+
+            mqttClient.subscribe(defaultStatusTopic)
+            mqttClient.subscribe(statusTopic)
+            Log.d(TAG, "Subscribed to topic: $defaultStatusTopic")
         } catch (e: MqttException) {
             Log.e(TAG, "Failed to connect to MQTT broker: ${e.message}")
         }
@@ -312,12 +345,45 @@ class ServiceBluetoothToMQTT : Service() {
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "Service destroyed.")
 
         localBroadcastManager.unregisterReceiver(broadcastReceiver)
 
         bluetoothLeScanner.stopScan(scanCallback)
         if (mqttClient.isConnected) {
             mqttClient.disconnect()
+        }
+    }
+
+    override fun connectionLost(cause: Throwable?) {
+        Log.d(TAG, "Connection lost ${cause.toString()}")
+    }
+
+    override fun messageArrived(topic: String?, message: MqttMessage?) {
+        Log.d(TAG, "Receive message: ${message.toString()} from topic: $topic")
+
+        if((topic == statusTopic || topic == defaultStatusTopic) && message.toString() == "online") {
+            createdDevices.forEach { device ->
+                device.mqttReconnected()
+            }
+        }
+    }
+
+    override fun deliveryComplete(token: IMqttDeliveryToken?) {
+        for (topic in token!!.topics) {
+            Log.d(TAG, "Delivery complete $topic")
+        }
+    }
+
+    override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+        if (reconnect) {
+            createdDevices.forEach { device ->
+                device.mqttReconnected()
+            }
+
+            Log.d(TAG, "Reconnected to : $serverURI")
+        } else {
+            Log.d(TAG, "Connected to: $serverURI")
         }
     }
 }

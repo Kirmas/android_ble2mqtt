@@ -41,30 +41,52 @@ data class SubDevice(
 
 abstract class BaseDevice(private val connectedBTDevice: BluetoothDevice, private val serviceContext: ServiceBluetoothToMQTT) {
     private val TAG = "BaseDevice"
-    var availableCharacteristics: ArrayList<AvailableCharacteristicInformation> = arrayListOf()
-    var manufacturer: String = ""
-    var subDevices: ArrayList<SubDevice> = arrayListOf()
-    var deviceName: String = ""
-    var bAutoConnect: Boolean = false
+
+    open val availableCharacteristics: ArrayList<AvailableCharacteristicInformation> = arrayListOf()
+    abstract val manufacturer: String
+    abstract val subDevices: ArrayList<SubDevice>
+    abstract val model: String
+
+    open val autoConnect: Boolean
+        get() {
+            return false
+        }
+
+
+    private val deviceName: String
+        get() {
+            return connectedBTDevice.address.replace(":", "").lowercase()
+        }
 
     fun isMacAddressEqual (macAddress: String): Boolean {
         return connectedBTDevice.address == macAddress
     }
 
-    open fun created() {
-        deviceName = connectedBTDevice.address.replace(":", "").lowercase()
+    fun created() {
+        sendInitialPayload()
+        if(autoConnect && availableCharacteristics.isNotEmpty()) connectToDevice(connectedBTDevice)
+    }
 
+    fun mqttReconnected() {
+        sendInitialPayload()
+        sendData2MQTT()
+    }
+
+    private fun sendInitialPayload() {
         for (subDevice in subDevices) {
             val message = MqttMessage()
-            message.qos = 0
             message.payload = createInitialPayloadForSubDevice(subDevice)
             try {
-                serviceContext.registerPublish(subDevice.deviceType, deviceName, subDevice.deviceClass, message)
+                serviceContext.registerPublish(
+                    subDevice.deviceType,
+                    deviceName,
+                    subDevice.deviceClass,
+                    message
+                )
             } catch (e: MqttException) {
                 e.printStackTrace()
             }
         }
-        if(bAutoConnect) connectToDevice(connectedBTDevice)
     }
 
     abstract fun newPassiveBLEData(newData: ByteArray)
@@ -165,7 +187,6 @@ abstract class BaseDevice(private val connectedBTDevice: BluetoothDevice, privat
     protected fun sendData2MQTT() {
         // Відправка даних на MQTT-брокер
         val message = MqttMessage()
-        message.qos = 0
         message.payload = createPayload()
         try {
             serviceContext.publish(deviceName, message)
@@ -184,7 +205,7 @@ abstract class BaseDevice(private val connectedBTDevice: BluetoothDevice, privat
 
         deviceObject.put("identifiers", identifiersArray)
         deviceObject.put("manufacturer", manufacturer)
-        deviceObject.put("model", connectedBTDevice.name)
+        deviceObject.put("model", model)
         deviceObject.put("name", deviceName)
 
         jsonObject.put("device", deviceObject)

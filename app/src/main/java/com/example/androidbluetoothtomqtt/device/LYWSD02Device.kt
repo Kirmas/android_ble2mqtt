@@ -23,15 +23,17 @@ class LYWSD02Device(connectedBTDevice: BluetoothDevice, serviceContext: ServiceB
     private var temperature: Float = 0.0f
     private var battery: Int = 100
 
-    override fun created() {
-        availableCharacteristics.add(AvailableCharacteristicInformation(SERVICE, UUID_DATA, CharacteristicAccessType.Notification))
-        availableCharacteristics.add(AvailableCharacteristicInformation(SERVICE, UUID_BATTERY, CharacteristicAccessType.Read))
-        subDevices.add(SubDevice("sensor","temperature", true, "", "measurement", "°C"))
-        subDevices.add(SubDevice("sensor","humidity", true, "", "measurement", "%"))
-        subDevices.add(SubDevice("sensor","battery", true, "diagnostic", "measurement", "%"))
+    override val model: String
+        get() = "MiJia Temperature Humidity Monitoring Meter Electronic Thermometer (LYWSD02MMC)"
 
-        super.created()
-    }
+    override val subDevices = arrayListOf<SubDevice>(
+        SubDevice("sensor","temperature", true, "", "measurement", "°C"),
+        SubDevice("sensor","humidity", true, "", "measurement", "%"),
+        SubDevice("sensor","battery", true, "diagnostic", "measurement", "%")
+    )
+
+    override val availableCharacteristics: ArrayList<AvailableCharacteristicInformation> = arrayListOf(AvailableCharacteristicInformation(SERVICE, UUID_DATA, CharacteristicAccessType.Notification),
+        AvailableCharacteristicInformation(SERVICE, UUID_BATTERY, CharacteristicAccessType.Read))
 
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
