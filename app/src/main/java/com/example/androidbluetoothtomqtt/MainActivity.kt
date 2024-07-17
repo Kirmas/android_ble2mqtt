@@ -5,10 +5,8 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.bluetooth.BluetoothAdapter
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -36,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,17 +45,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.example.androidbluetoothtomqtt.ui.theme.AndroidBluetoothToMqttTheme
+import com.example.androidbluetoothtomqtt.yaml.ConfigHandler
+import com.example.androidbluetoothtomqtt.yaml.DeviceHandler
 import com.vmadalin.easypermissions.EasyPermissions
 import com.vmadalin.easypermissions.annotations.AfterPermissionGranted
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import org.yaml.snakeyaml.DumperOptions
-import org.yaml.snakeyaml.Yaml
-import java.io.File
 
 @SuppressLint("MutableCollectionMutableState")
 class MainActivity : ComponentActivity() {
@@ -66,18 +59,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private val TAG = "MainActivity"
-    private val CONFIG_FILE_NAME = "config.yaml"
-    private val DEVICE_FILE_NAME = "device.yaml"
-    private var bConfigLoaded: Boolean = false
-    private var mqttServer by mutableStateOf<String>("tcp://localhost:1883")
-    private var mqttTopic by mutableStateOf<String>("bluetooth2mqtt")
-    private var mqttUser by mutableStateOf<String>("")
-    private var mqttPassword by mutableStateOf<CharArray>(CharArray(0) { ' ' })
-    private var selectedMenu by mutableStateOf<MenuItems>(MenuItems.Devices)
-    private var availableBTDevice by mutableStateOf<ArrayList<BTDeviceInformation>>(arrayListOf())
-    private var selectedBTDevice by mutableStateOf<MutableMap<String, String>>(mutableMapOf())
-    private lateinit var localBroadcastManager: LocalBroadcastManager
-    private lateinit var broadcastReceiver: BroadcastReceiver
+    private var selectedMenu by mutableStateOf(MenuItems.Devices)
+    private lateinit var webServer: ConfigurationServer
 
     private val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(
@@ -102,6 +85,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        webServer = ConfigurationServer()
+        webServer.start()
+
         setContent {
             AndroidBluetoothToMqttTheme {
                 // A surface container using the 'background' color from the theme
@@ -114,27 +101,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        localBroadcastManager = LocalBroadcastManager.getInstance(this)
-        broadcastReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                if(intent.hasExtra("AvailableBTDevice")) {
-                    availableBTDevice = intent.getParcelableArrayListExtra("AvailableBTDevice")!!
-                }
-            }
-        }
-
-        if (BluetoothAdapter.getDefaultAdapter() == null) //якщо блютуз вимкнений треба буде потім попросити його увімкнути на сервіс це не вплине так як по ідеї користувач може дергати бт туди сюди(нафіга це робити на стат утройстві?)
+        if (BluetoothAdapter.getDefaultAdapter() == null) //if bluetooth is turned off, then you need to ask to turn it on on the service, this will not affect the service, since the idea is that the user can pull the BT here and there (why do it on the status of the device?)
         {
             Log.e(TAG, "Bluetooth is not supported on this device")
             return
         }
-        loadDeviceFromYaml()
+
+        ConfigHandler.init(filesDir)
+        ConfigHandler.loadFromYaml()
+        ConfigHandler.bind(::onConfigUpdated)
+        DeviceHandler.init(filesDir)
+        DeviceHandler.loadFromYaml()
         checkAndRequestPermissions()
     }
 
     private fun checkAndRequestPermissions() {
         if (EasyPermissions.hasPermissions(this, *permissions)) {
-            loadConfigFromYaml()
             startBluetoothToMQTTService()
         } else {
             EasyPermissions.requestPermissions(
@@ -148,51 +130,37 @@ class MainActivity : ComponentActivity() {
 
     @AfterPermissionGranted(PERMISSION_REQUEST_CODE)
     private fun permissionGranted() {
-        loadConfigFromYaml()
+        startBluetoothToMQTTService()
+    }
+
+    private fun onConfigUpdated() {
+        restartBluetoothToMQTTService()
+    }
+
+    private fun restartBluetoothToMQTTService() {
+        if(isServiceRunning()) {
+            stopService(Intent(this, ServiceBluetoothToMQTT::class.java))
+        }
         startBluetoothToMQTTService()
     }
 
     private fun startBluetoothToMQTTService() {
-        if(!bConfigLoaded) {
+        if(!ConfigHandler.isConfigLoaded()) {
             Log.i(TAG, "Config not loaded")
+            return
+        }
+
+        if(!ConfigHandler.mqttServer.contains("tcp://"))
+        {
+            Log.e(TAG, "MQTT Server is not valid")
             return
         }
 
         if(!isServiceRunning()) {
             startForegroundService(Intent(this, ServiceBluetoothToMQTT::class.java))
-            if(selectedMenu == MenuItems.Devices) {
-                CoroutineScope(Dispatchers.Main).launch {
-                    delay(1000)
-                    startDataReceiver()
-                }
-            }
         } else {
             Log.i(TAG, "Service already running")
         }
-    }
-
-    private fun sendDataToService(name: String, value: Boolean) {
-        val intent = Intent("com.example.mainActivity")
-        intent.putExtra(name, value)
-        localBroadcastManager.sendBroadcast(intent)
-    }
-
-    private fun startDataReceiver() {
-        val intentFilter = IntentFilter("com.example.bluetoothToMQTT")
-        localBroadcastManager.registerReceiver(broadcastReceiver, intentFilter)
-        sendDataToService("SendData", true)
-    }
-
-
-
-    private fun stopDataReceiver() {
-        sendDataToService("SendData", false)
-        localBroadcastManager.unregisterReceiver(broadcastReceiver)
-    }
-
-    private fun restartBluetoothToMQTTService() {
-        stopService(Intent(this, ServiceBluetoothToMQTT::class.java))
-        startBluetoothToMQTTService()
     }
 
     private fun isServiceRunning(): Boolean {
@@ -203,66 +171,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-
-        if (selectedMenu == MenuItems.Devices) {
-            stopDataReceiver()
-        }
-    }
-
-    private fun loadConfigFromYaml() {
-        val configFile = File(filesDir, CONFIG_FILE_NAME)
-        if (configFile.exists()) {
-            val yaml = Yaml()
-            val configData = configFile.readText()
-            val configMap = yaml.load<Map<String, String>>(configData)
-            mqttServer = configMap["mqtt_server"].orEmpty()
-            mqttTopic = configMap["mqtt_topic"].orEmpty()
-            mqttUser = configMap["mqtt_user"].orEmpty()
-            mqttPassword = configMap["mqtt_password"].orEmpty().toCharArray()
-            bConfigLoaded = true
-            Log.i(TAG, "Config loaded")
-        } else {
-            Log.i(TAG, "Config not exists")
-        }
-    }
-
-    private fun saveConfigToYaml() {
-        val configData = mapOf(
-            "mqtt_server" to mqttServer,
-            "mqtt_topic" to mqttTopic,
-            "mqtt_user" to mqttUser,
-            "mqtt_password" to String(mqttPassword)
-        )
-        val dumperOptions = DumperOptions()
-        dumperOptions.defaultFlowStyle = DumperOptions.FlowStyle.BLOCK
-        dumperOptions.isPrettyFlow = true
-        val yaml = Yaml(dumperOptions)
-        val configFile = File(filesDir, CONFIG_FILE_NAME)
-        configFile.writeText(yaml.dump(configData))
-        bConfigLoaded = true
-        Log.i(TAG, "Config saved")
-    }
-
-    private fun loadDeviceFromYaml() {
-        val deviceFile = File(filesDir, DEVICE_FILE_NAME)
-        if (deviceFile.exists()) {
-            val yaml = Yaml()
-            val configData = deviceFile.readText()
-            selectedBTDevice = yaml.load<MutableMap<String, String>>(configData)
-            Log.i(TAG, "Device file loaded")
-        } else {
-            Log.i(TAG, "Device file not exists")
-        }
-    }
-
-    private fun saveDeviceToYaml() {
-        val dumperOptions = DumperOptions()
-        dumperOptions.defaultFlowStyle = DumperOptions.FlowStyle.BLOCK
-        dumperOptions.isPrettyFlow = true
-        val yaml = Yaml(dumperOptions)
-        val configFile = File(filesDir, DEVICE_FILE_NAME)
-        configFile.writeText(yaml.dump(selectedBTDevice))
-        Log.i(TAG, "Device file saved")
+        ConfigHandler.unbind(::onConfigUpdated)
+        webServer.stop()
     }
 
     @Composable
@@ -320,24 +230,24 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     private fun ShowSettings() {
         OutlinedTextField(
-            value = mqttServer,
-            onValueChange = { mqttServer = it },
+            value = ConfigHandler.mqttServer,
+            onValueChange = { ConfigHandler.mqttServer = it },
             label = { Text("MQTT Server") },
         )
         OutlinedTextField(
-            value = mqttTopic,
-            onValueChange = { mqttTopic = it },
+            value = ConfigHandler.mqttTopic,
+            onValueChange = { ConfigHandler.mqttTopic = it },
             label = { Text("MQTT Topic") }
         )
         OutlinedTextField(
-            value = mqttUser,
-            onValueChange = { mqttUser = it },
+            value = ConfigHandler.mqttUser,
+            onValueChange = { ConfigHandler.mqttUser = it },
             label = { Text("MQTT User") }
         )
         OutlinedTextField(
-            value = mqttPassword.joinToString(separator = ""),
+            value = ConfigHandler.mqttPassword.joinToString(separator = ""),
             onValueChange = { newValue ->
-                mqttPassword = newValue.toCharArray()
+                ConfigHandler.mqttPassword = newValue.toCharArray()
             },
             label = { Text("MQTT Password") },
             visualTransformation = PasswordVisualTransformation(),
@@ -345,8 +255,7 @@ class MainActivity : ComponentActivity() {
         )
         Button(
             onClick = {
-                saveConfigToYaml()
-                restartBluetoothToMQTTService()
+                ConfigHandler.saveToYaml()
             }
         ) {
             Text(text = "Save and Restart Service")
@@ -355,25 +264,26 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun ShowDevices() {
+        val devices by DeviceHandler.availableBTDevice.collectAsState()
+        val selectedDevices by DeviceHandler.selectedBTDevice.collectAsState()
 
         Column {
-            availableBTDevice.forEach { device ->
+            devices.forEach { device ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp)
                 ) {
                     Checkbox(
-                        checked = selectedBTDevice.containsKey(device.address),
+                        checked = selectedDevices.containsKey(device.address),
                         onCheckedChange = { isChecked ->
                             if (isChecked) {
-                                selectedBTDevice[device.address] = device.name
-                                saveDeviceToYaml()
+                                DeviceHandler.addSelectedDevice(device.address, device.name)
                             } else {
-                                selectedBTDevice.remove(device.address)
-                                saveDeviceToYaml()
+                                DeviceHandler.removeSelectedDevice(device.address)
                             }
-                            sendDataToService("SelectedDevice", true)}
+                            DeviceHandler.saveToYaml()
+                        }
                     )
                     Column(
                         modifier = Modifier
@@ -401,12 +311,6 @@ class MainActivity : ComponentActivity() {
     private fun handleSettingsMenuItemClick(menuItem: MenuItems) {
         if (selectedMenu == menuItem) {
             return
-        }
-        if (selectedMenu == MenuItems.Devices) {
-            stopDataReceiver()
-        }
-        else if (menuItem == MenuItems.Devices) {
-            startDataReceiver()
         }
 
         selectedMenu = menuItem

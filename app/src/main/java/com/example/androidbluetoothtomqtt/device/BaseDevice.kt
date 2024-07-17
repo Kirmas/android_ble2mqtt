@@ -11,6 +11,7 @@ import android.util.Log
 import com.example.androidbluetoothtomqtt.ServiceBluetoothToMQTT
 import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperation
 import com.example.androidbluetoothtomqtt.bluetoothoperation.BluetoothOperationStack
+import com.example.androidbluetoothtomqtt.yaml.ConfigHandler
 import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.json.JSONArray
@@ -201,7 +202,7 @@ abstract class BaseDevice(private val connectedBTDevice: BluetoothDevice, privat
         val deviceObject = JSONObject()
         val identifiersArray = JSONArray()
 
-        identifiersArray.put("${serviceContext.mqttTopic}_${deviceName}")
+        identifiersArray.put("${ConfigHandler.mqttTopic}_${deviceName}")
 
         deviceObject.put("identifiers", identifiersArray)
         deviceObject.put("manufacturer", manufacturer)
@@ -214,11 +215,11 @@ abstract class BaseDevice(private val connectedBTDevice: BluetoothDevice, privat
         if(subDevice.entityCategory.isNotEmpty()) {
             jsonObject.put("entity_category", subDevice.entityCategory)
         }
-        jsonObject.put("json_attributes_topic", "${serviceContext.mqttTopic}/${deviceName}")
+        jsonObject.put("json_attributes_topic", "${ConfigHandler.mqttTopic}/${deviceName}")
         jsonObject.put("name", "$deviceName ${subDevice.deviceClass}")
         jsonObject.put("state_class", subDevice.stateClass)
-        jsonObject.put("state_topic", "${serviceContext.mqttTopic}/${deviceName}")
-        jsonObject.put("unique_id", "${deviceName}_${subDevice.deviceClass}_${serviceContext.mqttTopic}")
+        jsonObject.put("state_topic", "${ConfigHandler.mqttTopic}/${deviceName}")
+        jsonObject.put("unique_id", "${deviceName}_${subDevice.deviceClass}_${ConfigHandler.mqttTopic}")
         jsonObject.put("unit_of_measurement", subDevice.unitOfMeasurement)
         jsonObject.put("value_template", "{{ value_json.${subDevice.deviceClass} }}")
         jsonObject.put("platform", "mqtt")

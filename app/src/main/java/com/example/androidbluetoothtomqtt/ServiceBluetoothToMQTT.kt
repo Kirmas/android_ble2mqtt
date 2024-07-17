@@ -14,19 +14,17 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.os.Handler
 import android.os.IBinder
-import android.os.Parcel
 import android.os.ParcelUuid
-import android.os.Parcelable
 import android.util.Log
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.example.androidbluetoothtomqtt.device.BaseDevice
 import com.example.androidbluetoothtomqtt.device.LYWSD02Device
+import com.example.androidbluetoothtomqtt.yaml.BTDeviceInformation
+import com.example.androidbluetoothtomqtt.yaml.ConfigHandler
+import com.example.androidbluetoothtomqtt.yaml.DeviceHandler
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended
 import org.eclipse.paho.client.mqttv3.MqttClient
@@ -34,44 +32,8 @@ import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
-import org.yaml.snakeyaml.Yaml
-import java.io.File
 import java.util.UUID
 import kotlin.math.pow
-
-
-data class BTDeviceInformation(
-    val name: String,
-    val address: String,
-    val distance: Double
-) : Parcelable {
-    constructor(parcel: Parcel) : this(
-        parcel.readString() ?: "",
-        parcel.readString() ?: "",
-        parcel.readDouble()
-    )
-
-    override fun writeToParcel(parcel: Parcel, flags: Int) {
-        parcel.writeString(name)
-        parcel.writeString(address)
-        parcel.writeDouble(distance)
-    }
-
-    override fun describeContents(): Int {
-        return 0
-    }
-
-    companion object CREATOR : Parcelable.Creator<BTDeviceInformation> {
-        override fun createFromParcel(parcel: Parcel): BTDeviceInformation {
-            return BTDeviceInformation(parcel)
-        }
-
-        override fun newArray(size: Int): Array<BTDeviceInformation?> {
-            return arrayOfNulls(size)
-        }
-    }
-}
-
 
 class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
 
@@ -101,20 +63,11 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
     private val defaultStatusTopic = "homeassistant/status"
     private val statusTopic = "hass/status"
 
-    private lateinit var mqttServer: String
-    lateinit var mqttTopic: String
-    private lateinit var mqttUser: String
-    private lateinit var mqttPassword: CharArray
-
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var mqttClient: MqttClient
     private lateinit var bluetoothLeScanner: BluetoothLeScanner
     private var isSendData: Boolean = false
-    var availableBTDevice: ArrayList<BTDeviceInformation> = arrayListOf()
-    private var selectedBTDevice: Map<String, String> = mapOf()
     private var createdDevices: ArrayList<BaseDevice> = arrayListOf()
-    private lateinit var localBroadcastManager: LocalBroadcastManager
-    private lateinit var broadcastReceiver: BroadcastReceiver
     private val scanHandler = Handler()
     private var isScanning: Boolean = false
 
@@ -122,27 +75,18 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
         throw UnsupportedOperationException("Not yet implemented")
     }
 
+    @SuppressLint("ForegroundServiceType")
     override fun onCreate() {
         super.onCreate()
 
-        val configFile = File(filesDir, "config.yaml")
-        if (configFile.exists()) {
-            val yaml = Yaml()
-            val configData = configFile.readText()
-            val configMap = yaml.load<Map<String, String>>(configData)
-            mqttServer = configMap["mqtt_server"].orEmpty()
-            mqttTopic = configMap["mqtt_topic"].orEmpty()
-            mqttUser = configMap["mqtt_user"].orEmpty()
-            mqttPassword = configMap["mqtt_password"].orEmpty().toCharArray()
-        }
-        else
-        {
-            Log.e(TAG, "config.yaml is missed")
+        ConfigHandler.init(filesDir)
+        ConfigHandler.loadFromYaml()
+        if(!ConfigHandler.isConfigLoaded()) {
             stopSelf()
             return
         }
-
-        loadSelectedBTDevice()
+        DeviceHandler.init(filesDir)
+        DeviceHandler.loadFromYaml()
 
         val channelId = "BluetoothToMQTTServiceChannel"
         val channelName = "Bluetooth to MQTT Service Channel"
@@ -166,41 +110,8 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
                 return
             }
 
-        localBroadcastManager = LocalBroadcastManager.getInstance(this)
-        broadcastReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                if(intent.hasExtra("SendData")) {
-                    isSendData = intent.getBooleanExtra("SendData", false)
-                    if (isSendData) {
-                        sendAvailableBTDevise()
-                    }
-                }
-                else if (intent.hasExtra("SelectedDevice")){
-                    loadSelectedBTDevice()
-                }
-            }
-        }
-        val intentFilter = IntentFilter("com.example.mainActivity")
-        localBroadcastManager.registerReceiver(broadcastReceiver, intentFilter)
-
         startScan()
-
         connectToMqttBroker()
-    }
-
-    private fun loadSelectedBTDevice() {
-        val deviceFile = File(filesDir, "device.yaml")
-        if (deviceFile.exists()) {
-            val yaml = Yaml()
-            val configData = deviceFile.readText()
-            selectedBTDevice = yaml.load<Map<String, String>>(configData)
-        }
-    }
-
-    private fun sendAvailableBTDevise() {
-        val intent = Intent("com.example.bluetoothToMQTT")
-        intent.putExtra("AvailableBTDevice", availableBTDevice)
-        localBroadcastManager.sendBroadcast(intent)
     }
 
     @SuppressLint("MissingPermission")
@@ -254,15 +165,12 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
             val btDevice: BluetoothDevice = result.device
 
             if(deviceNameToClass.containsKey(btDevice.name)) {
-                if (!availableBTDevice.any { it.address == btDevice.address }){
+                if (!DeviceHandler.getAvailableDevice().any { it.address == btDevice.address }){
                     Log.d(TAG, "Found device: ${btDevice.name} ${btDevice.address} ${calculateDistance(result.rssi)} ")
-                    availableBTDevice.add(BTDeviceInformation(btDevice.name, btDevice.address, calculateDistance(result.rssi)))
-                    if (isSendData) {
-                        sendAvailableBTDevise()
-                    }
+                    DeviceHandler.addAvailableDevice(BTDeviceInformation(btDevice.name, btDevice.address, calculateDistance(result.rssi)))
                 }
 
-                if(selectedBTDevice.containsKey(btDevice.address)) {
+                if(DeviceHandler.getSelectedDevice().containsKey(btDevice.address)) {
                     val createdDevice = createdDevices.find { device ->
                         device.isMacAddressEqual(btDevice.address)
                     }
@@ -310,12 +218,12 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
 
     private fun connectToMqttBroker() {
         val clientId = MqttClient.generateClientId()
-        mqttClient = MqttClient(mqttServer, clientId, MemoryPersistence())
+        mqttClient = MqttClient(ConfigHandler.mqttServer, clientId, MemoryPersistence())
         mqttClient.setCallback(this)
 
         val options = MqttConnectOptions()
-        options.userName = mqttUser
-        options.password = mqttPassword
+        options.userName = ConfigHandler.mqttUser
+        options.password = ConfigHandler.mqttPassword
         options.isAutomaticReconnect = true
 
         try {
@@ -332,8 +240,8 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
 
     fun publish(subTopic: String, message: MqttMessage)
     {
-        Log.d(TAG, "$mqttTopic/$subTopic $message")
-        mqttClient.publish("$mqttTopic/$subTopic", message)
+        Log.d(TAG, "${ConfigHandler.mqttTopic}/$subTopic $message")
+        mqttClient.publish("${ConfigHandler.mqttTopic}/$subTopic", message)
     }
 
     fun registerPublish(type: String, subTopic: String, devClass: String, message: MqttMessage)
@@ -346,8 +254,6 @@ class ServiceBluetoothToMQTT : Service(), MqttCallbackExtended {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroyed.")
-
-        localBroadcastManager.unregisterReceiver(broadcastReceiver)
 
         bluetoothLeScanner.stopScan(scanCallback)
         if (mqttClient.isConnected) {

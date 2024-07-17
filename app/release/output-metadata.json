@@ -12,9 +12,26 @@
       "filters": [],
       "attributes": [],
       "versionCode": 3,
-      "versionName": "2023.6.0",
-      "outputFile": "android_ble2mqtt_2023.6.0.apk"
+      "versionName": "2024.7.0",
+      "outputFile": "android_ble2mqtt_2024.7.0.apk"
     }
   ],
-  "elementType": "File"
+  "elementType": "File",
+  "baselineProfiles": [
+    {
+      "minApi": 28,
+      "maxApi": 30,
+      "baselineProfiles": [
+        "baselineProfiles/1/android_ble2mqtt_2024.7.0.dm"
+      ]
+    },
+    {
+      "minApi": 31,
+      "maxApi": 2147483647,
+      "baselineProfiles": [
+        "baselineProfiles/0/android_ble2mqtt_2024.7.0.dm"
+      ]
+    }
+  ],
+  "minSdkVersionForDexing": 27
 }
